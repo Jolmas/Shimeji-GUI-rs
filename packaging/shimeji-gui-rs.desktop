@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Shimeji GUI (Rust)
+GenericName=Shimeji mascot manager
+Comment=Manage wl_shimeji mascots on Wayland/KDE
+Exec=shimeji-gui-rs
+Icon=applications-games
+Terminal=false
+Categories=Utility;Game;
+StartupNotify=true
