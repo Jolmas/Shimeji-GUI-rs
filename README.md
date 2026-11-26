@@ -1,6 +1,6 @@
 # shimeji-gui-rs
 
-GUI de escritorio en Rust para gestionar personajes de `wl_shimeji` mediante `shimejictl`.  
+GUI de escritorio en Rust para gestionar personajes de [wl_shimeji](https://github.com/CluelessCatBurger/wl_shimeji) mediante `shimejictl`.  
 Construida con `eframe/egui`, orientada a Linux Wayland/KDE Plasma.
 
 ![image](image.png)
