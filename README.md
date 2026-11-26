@@ -1,66 +1,66 @@
 # shimeji-gui-rs
 
-GUI de escritorio en Rust para gestionar personajes de [wl_shimeji](https://github.com/CluelessCatBurger/wl_shimeji) mediante `shimejictl`.  
-Construida con `eframe/egui`, orientada a Linux Wayland/KDE Plasma.
+Desktop GUI written in Rust for managing [wl_shimeji](https://github.com/CluelessCatBurger/wl_shimeji) characters via `shimejictl`.  
+Built with `eframe/egui`, targeted at Linux Wayland/KDE Plasma.
 
 ![image](image.png)
 
-## Funciones
+## Features
 
-### Personajes
-- Lista de prototipos con búsqueda, miniatura y vista previa.
-- **Invocar (Summon)**: cantidad, posición X/Y, comportamiento inicial y entorno destino.
-- **Descartar (Dismiss)**: un personaje, mismo tipo, otros, pantalla actual o todos (con confirmación).
-- **Comportamiento y rescate**: cambiar comportamiento del personaje seleccionado y restaurar ventanas.
-- **Gestión**: agregar/importar `.wlshm`, exportar personaje a `.zip` (selección de carpeta destino), eliminar personaje (con confirmación).
+### Characters
+- Prototype list with search, thumbnail, and preview.
+- **Summon**: count, X/Y position, initial behavior, and target environment.
+- **Dismiss**: a character, the same type, others, the current screen, or all (with confirmation).
+- **Behavior and rescue**: change the behavior of the selected character and restore windows.
+- **Management**: add/import `.wlshm` files, export a character to `.zip` (choose the destination folder), delete a character (with confirmation).
 
-### Conversor
-- Convierte paquetes desde **ZIP** o **directorio** a formato `.wlshm`.
-- Permite elegir directorio de salida.
-- Opción de importar el paquete convertido al finalizar.
+### Converter
+- Converts packages from **ZIP** or **directory** to the `.wlshm` format.
+- Lets you choose the output directory.
+- Option to import the converted package when finished.
 
-### Entornos / Inspector
-- Visualiza entornos detectados y sus datos (ID, nombre, tamaño, mascotas).
-- Permite seleccionar entorno objetivo para acciones.
+### Environments / Inspector
+- Displays detected environments and their data (ID, name, size, pets).
+- Allows selecting the target environment for actions.
 
-### Ajustes
-- **Idioma**: Español / English.
-- **Tema**: Claro / Oscuro (se guarda y se carga al iniciar).
-- Configuración de sesión/plugins e interacción con ventanas (IE mode), según soporte de `wl_shimeji`.
-- Autostart y opciones de servicio.
+### Settings
+- **Language**: Español / English.
+- **Theme**: Light / Dark (saved and restored on startup).
+- Session/plugin configuration and window interaction (IE mode), depending on `wl_shimeji` support.
+- Autostart and service options.
 
-### Sistema
-- Icono de bandeja con acciones rápidas.
-- Cerrar la ventana con la «X» (o Alt+F4) cierra de verdad el proceso de la GUI, así que su icono desaparece del dock/taskbar; el proceso anfitrión de la bandeja sigue vivo.
-- **Mostrar / Ajustes** en la bandeja vuelve a lanzar la ventana; **Salir/Quit** termina la aplicación.
-- Funciona con cualquier compositor (Wayland o X11): no depende de atajos propietarios ni de ventanas minimizadas.
-- Registro/log de salida de comandos.
-- Diálogos de archivo con soporte nativo en KDE (`kdialog`/`zenity`) y fallback.
+### System
+- Tray icon with quick actions.
+- Closing the window with the "X" (or Alt+F4) actually terminates the GUI process, so its icon disappears from the dock/taskbar; the tray host process stays alive.
+- **Show / Settings** in the tray relaunches the window; **Exit/Quit** terminates the application.
+- Works with any compositor (Wayland or X11): it does not rely on proprietary shortcuts or minimized windows.
+- Log of command output.
+- File dialogs with native support on KDE (`kdialog`/`zenity`) and a fallback.
 
-## Requisitos
+## Requirements
 
-- Linux (probado para Wayland/KDE Plasma).
-- `shimejictl` disponible en `PATH`.
-- Rust estable para compilar (`edition 2024`).
+- Linux (tested on Wayland/KDE Plasma).
+- `shimejictl` available in `PATH`.
+- Stable Rust to build (`edition 2024`).
 
-## Compilar y ejecutar
+## Build and run
 
 ```bash
 cargo build --release
 cargo run
 ```
 
-Binario de release:
+Release binary:
 
 ```bash
 ./target/release/shimeji-gui-rs
 ```
 
-## Compatibilidad
+## Compatibility
 
-La app mantiene compatibilidad con rutas y formatos existentes de `wl_shimeji`:
+The app maintains compatibility with existing `wl_shimeji` paths and formats:
 
 - `~/.config/wl_shimeji`
 - `~/.local/share/wl_shimeji/shimeji-overlayd.conf`
-- Archivos `*-support.conf`
-- `ie_mode`, autostart/desktop, `shimejictl`, paquetes `.wlshm`
+- `*-support.conf` files
+- `ie_mode`, autostart/desktop, `shimejictl`, `.wlshm` packages
