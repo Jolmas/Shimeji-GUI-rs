@@ -311,16 +311,40 @@ pub fn load_gui_dark_mode(paths: &Paths) -> Option<bool> {
 }
 
 pub fn save_gui_dark_mode(paths: &Paths, dark: bool) -> io::Result<()> {
+    update_gui_conf(paths, "theme=", format!("theme={}", if dark { "dark" } else { "light" }))
+}
+
+fn read_gui_conf_value(paths: &Paths, prefix: &str) -> Option<String> {
+    let text = fs::read_to_string(&paths.gui_conf).ok()?;
+    for line in text.lines() {
+        if let Some(v) = line.trim().strip_prefix(prefix) {
+            return Some(v.trim().to_string());
+        }
+    }
+    None
+}
+
+fn update_gui_conf(paths: &Paths, prefix: &str, entry: String) -> io::Result<()> {
     if let Some(parent) = paths.gui_conf.parent() { fs::create_dir_all(parent)?; }
     let mut lines: Vec<String> = Vec::new();
     if let Ok(text) = fs::read_to_string(&paths.gui_conf) {
         for line in text.lines() {
-            if line.trim_start().starts_with("theme=") { continue; }
+            if line.trim_start().starts_with(prefix) { continue; }
             lines.push(line.to_string());
         }
     }
-    lines.push(format!("theme={}", if dark { "dark" } else { "light" }));
+    lines.push(entry);
     fs::write(&paths.gui_conf, lines.join("\n") + "\n")
+}
+
+pub fn load_gui_lang(paths: &Paths) -> Option<String> { read_gui_conf_value(paths, "lang=") }
+pub fn save_gui_lang(paths: &Paths, lang: &str) -> io::Result<()> {
+    update_gui_conf(paths, "lang=", format!("lang={lang}"))
+}
+
+pub fn load_gui_selected_proto(paths: &Paths) -> Option<String> { read_gui_conf_value(paths, "proto=") }
+pub fn save_gui_selected_proto(paths: &Paths, name: &str) -> io::Result<()> {
+    update_gui_conf(paths, "proto=", format!("proto={name}"))
 }
 #[cfg(test)]
 mod tests {
@@ -338,6 +362,22 @@ mod tests {
             desktop: tmp.join(".local/share/applications/shimeji-gui-rs.desktop"),
             gui_conf: tmp.join(".config/wl_shimeji/shimeji-gui-rs.conf"),
         }
+    }
+
+    #[test]
+    fn gui_prefs_roundtrip_and_preserve_each_other() {
+        let dir = tempdir().unwrap();
+        let paths = test_paths(dir.path());
+        fs::create_dir_all(paths.config.clone()).unwrap();
+        save_gui_dark_mode(&paths, true).unwrap();
+        save_gui_lang(&paths, "en").unwrap();
+        save_gui_selected_proto(&paths, "Cat").unwrap();
+        assert_eq!(load_gui_dark_mode(&paths), Some(true));
+        assert_eq!(load_gui_lang(&paths).as_deref(), Some("en"));
+        assert_eq!(load_gui_selected_proto(&paths).as_deref(), Some("Cat"));
+        save_gui_lang(&paths, "es").unwrap();
+        assert_eq!(load_gui_dark_mode(&paths), Some(true));
+        assert_eq!(load_gui_selected_proto(&paths).as_deref(), Some("Cat"));
     }
 
     #[test]

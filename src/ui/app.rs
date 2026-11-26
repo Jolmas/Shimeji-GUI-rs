@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
-enum Pending { PrototypesList, PrototypeInfo(String), Environments, ConfigList, Convert, Import, Stop, EnvClose, Generic }
+enum Pending { PrototypesList, PrototypeInfo(String), Environments, Convert, Import, Stop, EnvClose, Generic }
 
 #[derive(Debug, Clone, Copy)]
 enum DialogTarget { ConvertSrcZip, ConvertSrcDir, ConvertOutDir, ImportFiles, ExportDestDir }
@@ -49,14 +49,10 @@ pub struct ShimejiApp {
     pending: Option<Pending>,
     ctl_rx: Option<mpsc::Receiver<CtlEvent>>,
     ctl_handle: Option<CtlHandle>,
-    tray_rx: Option<mpsc::Receiver<crate::ui::tray::TrayEvent>>,
-    tray_ctl: Option<crate::ui::tray::TrayControl>,
-    tray_lang: Lang,
     confirm_delete: Option<String>,
     confirm_export: Option<String>,
     confirm_dismiss_all: bool,
     confirm_stop: bool,
-    allow_close: bool,
     restart_rx: Option<mpsc::Receiver<String>>,
     bg_rx: Option<mpsc::Receiver<String>>,
     preview_rx: Option<mpsc::Receiver<(String, Option<egui::ColorImage>)>>,
@@ -85,7 +81,7 @@ impl Default for ShimejiApp {
             environments: vec![], quantity: 1, pos_x: -1, pos_y: -1, env_idx: None,
             settings: SettingsState { open:false, breed:true, drag:true, cursor:true, affordances:true, dismiss_anim:true, win_interact:false, win_throw:false, throw_policy:"looping".into(), ie_mode:IeMode::Active, session:Session::Labwc, throw_multi:true, drag_multi:true, unified_out:true, scale:-1.0, opacity:-1.0, layer:"overlay".into(), interp:0, maxn:512, tablets:false, autostart:false, plugins_path:String::new(), confirm_restart:false, raw:String::new() },
             convert: ConvertState { open:false, src:String::new(), out: dirs_download(), force:true, import_after:true, log:String::new() },
-            pending: None, ctl_rx: None, ctl_handle: None, tray_rx: None, tray_ctl: None, tray_lang: Lang::Es, confirm_delete: None, confirm_export: None, confirm_dismiss_all: false, confirm_stop: false, allow_close: false, restart_rx: None, bg_rx: None, preview_rx: None, preview_tex: None, preview_pending: None, list_preview_tx, list_preview_rx, list_previews: HashMap::new(), list_preview_pending: HashSet::new(), list_preview_misses: HashSet::new(), dialog_rx: None, last_import_paths: Vec::new(), import_retry_done: false, needs_proto_refresh: false, raw_info: String::new(), last_output: String::new(), initialized: false,
+            pending: None, ctl_rx: None, ctl_handle: None, confirm_delete: None, confirm_export: None, confirm_dismiss_all: false, confirm_stop: false, restart_rx: None, bg_rx: None, preview_rx: None, preview_tex: None, preview_pending: None, list_preview_tx, list_preview_rx, list_previews: HashMap::new(), list_preview_pending: HashSet::new(), list_preview_misses: HashSet::new(), dialog_rx: None, last_import_paths: Vec::new(), import_retry_done: false, needs_proto_refresh: false, raw_info: String::new(), last_output: String::new(), initialized: false,
         }
     }
 }
@@ -93,17 +89,25 @@ impl Default for ShimejiApp {
 fn dirs_download() -> String { std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join("Downloads").to_string_lossy().to_string() }
 
 impl ShimejiApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self { Self::default() }
-    fn t(&self, key: Key) -> &'static str { i18n::t(self.lang, key) }
-    fn tray_labels(&self) -> crate::ui::tray::TrayLabels {
-        crate::ui::tray::TrayLabels {
-            show: self.t(Key::TrayShow).to_string(),
-            summon: self.t(Key::TraySummon).to_string(),
-            dismiss_all: self.t(Key::TrayDismissAll).to_string(),
-            settings: self.t(Key::TraySettings).to_string(),
-            quit: self.t(Key::TrayQuit).to_string(),
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self { Self::new_with_settings(cc, false) }
+
+    fn new_with_settings(_cc: &eframe::CreationContext<'_>, open_settings: bool) -> Self {
+        let mut app = Self::default();
+        if let Ok(paths) = Paths::from_env() {
+            if let Some(lang) = config::load_gui_lang(&paths) { app.lang = Lang::from_code(&lang); }
+            if let Some(proto) = config::load_gui_selected_proto(&paths) { app.selected_proto = Some(proto); }
         }
+        // Read the daemon config before the first frame. Otherwise the settings
+        // window briefly shows the defaults (BREEDING=true, etc.) and looks like
+        // it ignored the config file.
+        app.load_config_sync();
+        if open_settings {
+            app.settings.open = true;
+        }
+        app
     }
+
+    fn t(&self, key: Key) -> &'static str { i18n::t(self.lang, key) }
     fn push_log(&mut self, s: &str) { self.log.push_str(s); if !s.ends_with('\n') { self.log.push('\n'); } }
 
     fn run_cmd(&mut self, cmd: CtlCommand, pending: Pending) {
@@ -139,21 +143,6 @@ impl ShimejiApp {
             }
         }
         if self.ctl_rx.is_some() { ctx.request_repaint_after(Duration::from_millis(100)); }
-    }
-
-    fn poll_tray(&mut self, ctx: &egui::Context) {
-        let mut events = Vec::new();
-        if let Some(rx) = &self.tray_rx { while let Ok(ev) = rx.try_recv() { events.push(ev); } }
-        for ev in events {
-            match ev {
-                crate::ui::tray::TrayEvent::Show => { ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true)); ctx.send_viewport_cmd(egui::ViewportCommand::Focus); }
-                crate::ui::tray::TrayEvent::Quit => { self.allow_close = true; ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
-                crate::ui::tray::TrayEvent::Summon => { if let Some(name) = self.selected_proto.clone() { self.run_cmd(CtlCommand::Summon { name, count: Some(1), x: Some(-1), y: Some(-1), env: self.selected_env_id(), interactive: false }, Pending::Generic); } }
-                crate::ui::tray::TrayEvent::DismissAll => { self.run_cmd(CtlCommand::Dismiss { id: None, all: true, interactive: false, same_type: false, others: false, env: self.selected_env_id() }, Pending::Generic); }
-                crate::ui::tray::TrayEvent::Settings => { self.open_settings(); ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true)); ctx.send_viewport_cmd(egui::ViewportCommand::Focus); }
-            }
-        }
-        if self.tray_rx.is_some() { ctx.request_repaint_after(Duration::from_millis(500)); }
     }
 
     fn poll_restart(&mut self, ctx: &egui::Context) {
@@ -293,10 +282,10 @@ impl ShimejiApp {
                     let _ = tx.send((name_bg, img));
                 });
                 self.raw_info = text.to_string();
-                self.selected_proto = Some(name);
+                self.selected_proto = Some(name.clone());
+                if let Ok(paths) = Paths::from_env() { let _ = config::save_gui_selected_proto(&paths, &name); }
             }
             Some(Pending::Environments) if code == 0 => { self.environments = parse_environments(text); }
-            Some(Pending::ConfigList) if code == 0 => { self.settings.raw = text.to_string(); self.apply_config_list(text); }
             Some(Pending::Convert) => {
                 if code == 0 && self.convert.import_after {
                     let out = PathBuf::from(&self.convert.out);
@@ -367,7 +356,18 @@ impl ShimejiApp {
         self.run_cmd(CtlCommand::PrototypesList { detailed:false }, Pending::PrototypesList);
     }
     fn refresh_envs(&mut self) { self.run_cmd(CtlCommand::EnvironmentList, Pending::Environments); }
-    fn refresh_config(&mut self) { self.run_cmd(CtlCommand::ConfigList, Pending::ConfigList); }
+    /// Load `config list` synchronously so the settings UI is correct on its
+    /// very first frame. The async refresh would briefly show the defaults
+    /// (e.g. BREEDING=true) and look like the file was not read.
+    fn load_config_sync(&mut self) {
+        let args = CtlCommand::ConfigList.to_args();
+        if let Ok(out) = crate::core::shimejictl::run_ctl_sync(&args, None, Duration::from_secs(12)) {
+            if out.code == 0 {
+                self.settings.raw = out.output.clone();
+                self.apply_config_list(&out.output);
+            }
+        }
+    }
 
     fn summon_mascot(&mut self, name: String, count: u32, x: Option<i32>, y: Option<i32>, env: Option<i32>, interactive: bool) {
         if interactive || count <= 1 {
@@ -391,6 +391,7 @@ impl ShimejiApp {
 
     fn select_proto(&mut self, name: String) {
         self.selected_proto = Some(name.clone());
+        if let Ok(paths) = Paths::from_env() { let _ = config::save_gui_selected_proto(&paths, &name); }
         self.behaviors.clear();
         self.selected_behavior.clear();
         self.preview_tex = None;
@@ -579,10 +580,10 @@ impl ShimejiApp {
             if let Err(e) = res { errors.push(format!("autostart: {e}")); }
         }
         if errors.is_empty() { self.push_log(self.t(Key::ConfigApplied)); } else { self.push_log(&format!("{}\\n{}", self.t(Key::ConfigApplyErrors), errors.join("\\n"))); }
-        self.refresh_config();
+        self.load_config_sync();
     }
 
-    fn open_settings(&mut self) { self.settings.open = true; self.refresh_config(); }
+    fn open_settings(&mut self) { self.settings.open = true; self.load_config_sync(); }
     fn open_convert(&mut self) { self.convert.open = true; self.convert.log.clear(); }
 
     fn run_file_dialog(target: DialogTarget, title: &str) -> Vec<PathBuf> {
@@ -796,7 +797,6 @@ impl eframe::App for ShimejiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_visuals(if self.dark_mode { egui::Visuals::dark() } else { egui::Visuals::light() });
         self.poll_ctl(ctx);
-        self.poll_tray(ctx);
         self.poll_restart(ctx);
         self.poll_bg(ctx);
         self.poll_preview(ctx);
@@ -810,37 +810,22 @@ impl eframe::App for ShimejiApp {
                     ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
                 }
             }
-            let labels = self.tray_labels();
-            if let Some((rx, ctl)) = crate::ui::tray::spawn_tray(labels) {
-                self.tray_rx = Some(rx);
-                self.tray_ctl = Some(ctl);
-                self.tray_lang = self.lang;
-                self.push_log("Tray: ok");
-            } else {
-                self.push_log("Tray: unavailable (close will exit)");
-            }
             self.refresh_prototypes();
             self.refresh_envs();
-        }
-        if self.tray_lang != self.lang {
-            self.tray_lang = self.lang;
-            let labels = self.tray_labels();
-            if let Some(ctl) = &self.tray_ctl { ctl.update_labels(labels); }
         }
         if let Some(img) = self.preview_pending.take() {
             self.preview_tex = Some(ctx.load_texture("proto-preview", img, egui::TextureOptions::LINEAR));
         }
-        if ctx.input(|i| i.viewport().close_requested()) {
-            // Allow close; tray Quit also closes via allow_close/Close command.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading(self.t(Key::AppTitle));
                 ui.separator();
                 ui.label(self.t(Key::LanguageLabel));
+                let prev_lang = self.lang;
                 egui::ComboBox::from_id_salt("lang").selected_text(self.lang.label()).show_ui(ui, |ui| { for l in Lang::all() { ui.selectable_value(&mut self.lang, l, l.label()); } });
+                if self.lang != prev_lang {
+                    if let Ok(paths) = Paths::from_env() { let _ = config::save_gui_lang(&paths, self.lang.code()); }
+                }
                 ui.label(self.t(Key::ThemeLabel));
                 let theme_label = if self.dark_mode { self.t(Key::ThemeDark) } else { self.t(Key::ThemeLight) };
                 egui::ComboBox::from_id_salt("theme").selected_text(theme_label).show_ui(ui, |ui| {
@@ -1222,7 +1207,7 @@ impl ShimejiApp {
                 let l = self.t(Key::AutostartLabel); ui.checkbox(&mut self.settings.autostart, l);
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button(self.t(Key::BtnReread)).clicked() { self.refresh_config(); }
+                    if ui.button(self.t(Key::BtnReread)).clicked() { self.load_config_sync(); }
                     if ui.button(self.t(Key::BtnApplySave)).clicked() { self.save_settings(); }
                 });
                 ui.collapsing(self.t(Key::RawConfig), |ui| { egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| { ui.add(egui::TextEdit::multiline(&mut self.settings.raw.as_str()).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace)); }); });
@@ -1264,7 +1249,99 @@ impl ShimejiApp {
 
 }
 
+fn tray_labels(lang: Lang) -> crate::ui::tray::TrayLabels {
+    crate::ui::tray::TrayLabels {
+        show: i18n::t(lang, Key::TrayShow).to_string(),
+        summon: i18n::t(lang, Key::TraySummon).to_string(),
+        dismiss_all: i18n::t(lang, Key::TrayDismissAll).to_string(),
+        settings: i18n::t(lang, Key::TraySettings).to_string(),
+        quit: i18n::t(lang, Key::TrayQuit).to_string(),
+    }
+}
+
+/// The GUI runs in a child process so that closing the window really exits
+/// that process (destroying the window and its dock icon) while the tray host
+/// stays alive in the parent.
+fn run_gui() -> eframe::Result<()> {
+    let open_settings = std::env::args().any(|arg| arg == "--settings");
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 720.0]),
+        run_and_return: false,
+        ..Default::default()
+    };
+    eframe::run_native("wl_shimeji GUI", options, Box::new(move |cc| {
+        Ok(Box::new(ShimejiApp::new_with_settings(cc, open_settings)) as Box<dyn eframe::App>)
+    }))
+}
+
+fn spawn_gui_child(open_settings: bool) -> Option<std::process::Child> {
+    let exe = std::env::current_exe().ok()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.env("SHIMEJI_GUI_CHILD", "1");
+    if open_settings { cmd.arg("--settings"); }
+    cmd.spawn().ok()
+}
+
+fn stop_gui_child(child: &mut Option<std::process::Child>) {
+    if let Some(c) = child.as_mut() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+    *child = None;
+}
+
 pub fn run() -> eframe::Result<()> {
-    let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 720.0]), ..Default::default() };
-    eframe::run_native("wl_shimeji GUI", options, Box::new(|cc| Ok(Box::new(ShimejiApp::new(cc)))))
+    if std::env::var_os("SHIMEJI_GUI_CHILD").is_some() {
+        return run_gui();
+    }
+
+    let lang = Paths::from_env().ok()
+        .and_then(|paths| config::load_gui_lang(&paths))
+        .map(|code| Lang::from_code(&code))
+        .unwrap_or(Lang::Es);
+
+    let Some((rx, _ctl)) = crate::ui::tray::spawn_tray(tray_labels(lang)) else {
+        // Without a system tray there is nowhere to hide to: just run the GUI
+        // normally and let closing the window exit the application.
+        return run_gui();
+    };
+
+    let mut child = spawn_gui_child(false);
+    use crate::ui::tray::TrayEvent;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(TrayEvent::Show) => {
+                if child.is_none() { child = spawn_gui_child(false); }
+            }
+            Ok(TrayEvent::Settings) => {
+                stop_gui_child(&mut child);
+                child = spawn_gui_child(true);
+            }
+            Ok(TrayEvent::Summon) => {
+                let name = Paths::from_env().ok()
+                    .and_then(|paths| config::load_gui_selected_proto(&paths))
+                    .unwrap_or_default();
+                if !name.is_empty() {
+                    let args = CtlCommand::Summon { name, count: Some(1), x: None, y: None, env: None, interactive: false }.to_args();
+                    let _ = crate::core::shimejictl::run_ctl_sync(&args, None, Duration::from_secs(30));
+                }
+            }
+            Ok(TrayEvent::DismissAll) => {
+                let args = CtlCommand::Dismiss { id: None, all: true, interactive: false, same_type: false, others: false, env: None }.to_args();
+                let _ = crate::core::shimejictl::run_ctl_sync(&args, None, Duration::from_secs(30));
+            }
+            Ok(TrayEvent::Quit) => {
+                stop_gui_child(&mut child);
+                return Ok(());
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                stop_gui_child(&mut child);
+                return Ok(());
+            }
+        }
+        if let Some(c) = child.as_mut() {
+            if c.try_wait().ok().flatten().is_some() { child = None; }
+        }
+    }
 }

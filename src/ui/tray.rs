@@ -54,6 +54,7 @@ pub struct TrayControl {
 }
 
 impl TrayControl {
+    #[allow(dead_code)]
     pub fn update_labels(&self, labels: TrayLabels) {
         let _ = self.handle.update(move |tray: &mut Tray| {
             tray.labels = labels;

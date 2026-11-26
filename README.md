@@ -31,6 +31,9 @@ Construida con `eframe/egui`, orientada a Linux Wayland/KDE Plasma.
 
 ### Sistema
 - Icono de bandeja con acciones rápidas.
+- Cerrar la ventana con la «X» (o Alt+F4) cierra de verdad el proceso de la GUI, así que su icono desaparece del dock/taskbar; el proceso anfitrión de la bandeja sigue vivo.
+- **Mostrar / Ajustes** en la bandeja vuelve a lanzar la ventana; **Salir/Quit** termina la aplicación.
+- Funciona con cualquier compositor (Wayland o X11): no depende de atajos propietarios ni de ventanas minimizadas.
 - Registro/log de salida de comandos.
 - Diálogos de archivo con soporte nativo en KDE (`kdialog`/`zenity`) y fallback.
 

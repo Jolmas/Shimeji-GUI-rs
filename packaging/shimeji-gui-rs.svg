@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Hongo sonriente">
+  <defs>
+    <linearGradient id="cap" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff7062"/>
+      <stop offset="1" stop-color="#d63830"/>
+    </linearGradient>
+    <linearGradient id="stem" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff6e2"/>
+      <stop offset="1" stop-color="#eed7aa"/>
+    </linearGradient>
+  </defs>
+
+  <!-- tallo -->
+  <path d="M96 132 h64 a14 14 0 0 1 14 14 v46 c0 25 -20 44 -46 44 s -46 -19 -46 -44 v-46 a14 14 0 0 1 14 -14 z"
+        fill="url(#stem)" stroke="#c8a878" stroke-width="4" stroke-linejoin="round"/>
+
+  <!-- sombrero -->
+  <path d="M28 136 C28 66 70 26 128 26 C186 26 228 66 228 136 C228 148 219 156 207 156 H49 C37 156 28 148 28 136 Z"
+        fill="url(#cap)" stroke="#a82a25" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M49 156 H207 C219 156 228 148 228 136 C228 130 227 124 226 119 C219 136 178 146 128 146 C78 146 37 136 30 119 C29 124 28 130 28 136 C28 148 37 156 49 156 Z"
+        fill="#8f201d" opacity="0.28"/>
+
+  <!-- puntos del sombrero -->
+  <circle cx="84" cy="78" r="14" fill="#ffffff" opacity="0.94"/>
+  <circle cx="150" cy="58" r="11" fill="#ffffff" opacity="0.94"/>
+  <circle cx="186" cy="96" r="12" fill="#ffffff" opacity="0.94"/>
+  <circle cx="120" cy="112" r="8" fill="#ffffff" opacity="0.88"/>
+
+  <!-- carita -->
+  <circle cx="106" cy="176" r="11" fill="#2b2118"/>
+  <circle cx="150" cy="176" r="11" fill="#2b2118"/>
+  <circle cx="102" cy="172" r="3.5" fill="#ffffff"/>
+  <circle cx="146" cy="172" r="3.5" fill="#ffffff"/>
+  <circle cx="88" cy="193" r="8" fill="#ff9a8f" opacity="0.7"/>
+  <circle cx="168" cy="193" r="8" fill="#ff9a8f" opacity="0.7"/>
+  <path d="M108 195 Q128 213 148 195" fill="none" stroke="#2b2118" stroke-width="6" stroke-linecap="round"/>
+</svg>
