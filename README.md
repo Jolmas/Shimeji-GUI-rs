@@ -17,9 +17,9 @@ Built with `eframe/egui`, targeted at Linux Wayland/KDE Plasma.
 ### Converter
 - Detects the input schema: original Shimeji with **Japanese XML** (`動作リスト`/`行動リスト`), **Shimeji-EE** instance (`conf/` + `img/`) or bundle (`manifest.json` + `animation.json` + `sprites/*.webp`), from ZIP or directory.
 - Japanese XML is translated in Rust using the `shimeji-jap-to-wlshm.py` table, then prepared as a single-prototype EE instance for `shimejictl convert`. Use the **Prototype name** field when `img/<name>` must be selected; otherwise it is deduced from the ZIP/directory name.
-- Bundles are converted in Rust by reusing a base prototype's logic (`--base`) and resizing its 46 sprites to 128×128 QOI. If the configured base is not installed, the first available prototype is used with a warning; mapped sprites missing from short bundles fall back to the nearest existing sprite.
+- Bundles are converted in Rust by reusing a base prototype's logic (`--base`) and resizing its 46 sprites to 128×128 QOI. If the configured base is not installed, the first **compatible** prototype (logic referencing exactly `shime1.qoi`…`shime46.qoi`) is used with a warning; mapped sprites missing from short bundles fall back to the nearest existing sprite.
 - Shimeji-EE instances are delegated to `shimejictl convert`.
-- Idempotent, selectable fixes (`--fixes`): `scale` (configurable target height), `anchor`, `fall`, `embedded` and `cover`; disable all with **No fixes**.
+- Idempotent, selectable fixes (`--fixes`): `refs` (verify sprite references and restore compatible logic), `scale` (configurable target height), `anchor`, `fall`, `embedded` and `cover`; disable all with **No fixes**.
 - **Fix existing .wlshm** applies the fixes to an already converted package without converting it again.
 - Failed `shimejictl` conversions are detected even when it exits with code 0: empty/invalid `.wlshm` files are discarded and the failure is reported instead of being imported.
 - Lets you choose the output directory (or a `.wlshm` file as destination) and import the result when finished.

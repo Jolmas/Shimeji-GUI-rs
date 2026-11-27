@@ -1286,6 +1286,7 @@ impl ShimejiApp {
             let l_import = self.t(Key::ConverterImportAfter);
             let l_no_fix = self.t(Key::ConverterNoFix);
             let l_fixes = self.t(Key::ConverterFixes);
+            let l_refs = self.t(Key::ConverterFixRefs);
             let l_scale = self.t(Key::ConverterFixScale);
             let l_anchor = self.t(Key::ConverterFixAnchor);
             let l_fall = self.t(Key::ConverterFixFall);
@@ -1302,6 +1303,7 @@ impl ShimejiApp {
             if !self.convert.no_fix {
                 ui.collapsing(l_fixes, |ui| {
                     ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.convert.fixes.refs, l_refs);
                         ui.checkbox(&mut self.convert.fixes.scale, l_scale);
                         ui.checkbox(&mut self.convert.fixes.anchor, l_anchor);
                         ui.checkbox(&mut self.convert.fixes.fall, l_fall);

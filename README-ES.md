@@ -17,9 +17,9 @@ Construida con `eframe/egui`, orientada a Linux Wayland/KDE Plasma.
 ### Conversor
 - Detecta el esquema de entrada: Shimeji original con **XML japonés** (`動作リスト`/`行動リスト`), instancia **Shimeji-EE** (`conf/` + `img/`) o bundle (`manifest.json` + `animation.json` + `sprites/*.webp`), en ZIP o directorio.
 - El XML japonés se traduce en Rust con la tabla de `shimeji-jap-to-wlshm.py` y se prepara como instancia EE de un prototipo para `shimejictl convert`. Usa el campo **Nombre del prototipo** cuando haya que elegir `img/<name>`; si no, se deduce del nombre del ZIP/directorio.
-- Los bundles se convierten en Rust reutilizando la lógica de un prototipo base (`--base`/prototipo base) y redimensionando sus 46 sprites a 128×128 en QOI. Si la base configurada no está instalada, se usa el primer prototipo disponible con un aviso; los sprites mapeados que falten en bundles cortos se sustituyen por el sprite existente más cercano.
+- Los bundles se convierten en Rust reutilizando la lógica de un prototipo base (`--base`/prototipo base) y redimensionando sus 46 sprites a 128×128 en QOI. Si la base configurada no está instalada, se usa el primer prototipo **compatible** (lógica que referencia exactamente `shime1.qoi`…`shime46.qoi`) con un aviso; los sprites mapeados que falten en bundles cortos se sustituyen por el sprite existente más cercano.
 - Las instancias Shimeji-EE se delegan a `shimejictl convert`.
-- Correcciones integradas, idempotentes y seleccionables (`--fixes`): `scale` (altura objetivo configurable), `anchor`, `fall`, `embedded` y `cover`; se pueden desactivar con **Sin correcciones**.
+- Correcciones integradas, idempotentes y seleccionables (`--fixes`): `refs` (verifica las referencias de sprites y restaura una lógica compatible), `scale` (altura objetivo configurable), `anchor`, `fall`, `embedded` y `cover`; se pueden desactivar con **Sin correcciones**.
 - **Solo corregir (.wlshm)** aplica las correcciones a un paquete ya convertido sin reconvertirlo.
 - Las conversiones fallidas de `shimejictl` se detectan aunque devuelva código 0: se descartan los `.wlshm` vacíos o inválidos y se informa del error en vez de importarlos.
 - Permite elegir directorio de salida (o un archivo `.wlshm` como destino) e importar el resultado al finalizar.

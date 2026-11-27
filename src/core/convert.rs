@@ -3,8 +3,8 @@
 //! Portada a Rust de `shimeji-umbriel/tools/shimeji-to-wlshm-en` y de
 //! `shimeji-jap-to-wlshm.py`. Soporta originales con XML japonés, instancias
 //! Shimeji-EE y bundles (`manifest.json` + `animation.json`), la reparación de
-//! paquetes ya convertidos y las cinco correcciones idempotentes (`scale`,
-//! `anchor`, `fall`, `embedded`, `cover`).
+//! paquetes ya convertidos y las seis correcciones idempotentes (`refs`,
+//! `scale`, `anchor`, `fall`, `embedded`, `cover`).
 
 use crate::core::japanese;
 use crate::core::shimejictl::{CtlEvent, CtlHandle, CtlOutput, run_cmd_sync, spawn_task};
@@ -20,7 +20,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, atomic::AtomicBool};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub const FIX_ORDER: [&str; 5] = ["scale", "anchor", "fall", "embedded", "cover"];
+pub const FIX_ORDER: [&str; 6] = ["refs", "scale", "anchor", "fall", "embedded", "cover"];
 const WLPK_HEADER_SIZE: usize = 512;
 pub const DEFAULT_BASE: &str = "Shimeji.Shimeji";
 
@@ -292,6 +292,7 @@ pub fn detect_format(path: &Path) -> InputFormat {
 
 #[derive(Debug, Clone, Default)]
 pub struct FixOptions {
+    pub refs: bool,
     pub scale: bool,
     pub anchor: bool,
     pub fall: bool,
@@ -301,10 +302,11 @@ pub struct FixOptions {
 
 impl FixOptions {
     pub fn all() -> Self {
-        Self { scale: true, anchor: true, fall: true, embedded: true, cover: true }
+        Self { refs: true, scale: true, anchor: true, fall: true, embedded: true, cover: true }
     }
     pub fn selected(&self, name: &str) -> bool {
         match name {
+            "refs" => self.refs,
             "scale" => self.scale,
             "anchor" => self.anchor,
             "fall" => self.fall,
@@ -325,6 +327,7 @@ impl FixOptions {
                 return Err(format!("corrección desconocida: {name} (disponibles: {})", FIX_ORDER.join(",")));
             }
             match name {
+                "refs" => out.refs = true,
                 "scale" => out.scale = true,
                 "anchor" => out.anchor = true,
                 "fall" => out.fall = true,
@@ -485,7 +488,7 @@ pub fn run_conversion(opts: &ConvertOptions, cancel: &Arc<AtomicBool>, log: &dyn
             return Err(format!("{} ya existe (usa -f para sobrescribir)", output.display()));
         }
         let mut package = WlshmArchive::open(&opts.source)?;
-        validate(&package, 1, log)?;
+        validate(&package, 1, false, log)?;
         apply_fixes(&mut package, opts, cancel, log)?;
         if package.is_dirty() {
             let bytes = package.save()?;
@@ -494,7 +497,7 @@ pub fn run_conversion(opts: &ConvertOptions, cancel: &Arc<AtomicBool>, log: &dyn
             log_line(log, &format!("    paquete actualizado: {} ({} bytes)", output.display(), fs::metadata(&output).map_err(|e| e.to_string())?.len()));
         }
         log_line(log, "[5] Re-validando paquete corregido");
-        validate(&package, 1, log)?;
+        validate(&package, 1, true, log)?;
         return Ok(output);
     }
 
@@ -569,7 +572,7 @@ pub fn run_conversion(opts: &ConvertOptions, cancel: &Arc<AtomicBool>, log: &dyn
     log_line(log, &format!("    escrito: {} ({size} bytes)", output.display()));
     log_line(log, "[3] Validando paquete");
     let mut package = WlshmArchive::open(&output)?;
-    validate(&package, 46, log)?;
+    validate(&package, 46, false, log)?;
 
     apply_fixes(&mut package, opts, cancel, log)?;
     if package.is_dirty() {
@@ -578,11 +581,11 @@ pub fn run_conversion(opts: &ConvertOptions, cancel: &Arc<AtomicBool>, log: &dyn
         log_line(log, &format!("    paquete actualizado: {} ({} bytes)", output.display(), bytes.len()));
     }
     log_line(log, "[5] Re-validando paquete corregido");
-    validate(&package, 46, log)?;
+    validate(&package, 46, true, log)?;
     Ok(output)
 }
 
-fn validate(package: &WlshmArchive, min_assets: usize, log: &dyn Fn(&str)) -> Result<Value, String> {
+fn validate(package: &WlshmArchive, min_assets: usize, strict_refs: bool, log: &dyn Fn(&str)) -> Result<Value, String> {
     let required = ["manifest.json", "scripts.json", "actions.json", "behaviors.json"];
     let names = package.names();
     let missing: Vec<&str> = required.iter().copied().filter(|n| !names.iter().any(|x| x == n)).collect();
@@ -600,12 +603,32 @@ fn validate(package: &WlshmArchive, min_assets: usize, log: &dyn Fn(&str)) -> Re
     }
     let first = package.get(&assets[0]).ok_or_else(|| "asset QOI ilegible".to_string())?;
     decode_qoi(first)?;
+
+    let refs = verify_sprite_refs(package)?;
+    if !refs.missing.is_empty() {
+        let detail = refs.missing.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
+        let suffix = if refs.missing.len() > 8 { ", ..." } else { "" };
+        if strict_refs {
+            return Err(format!(
+                "{} referencias de sprites sin asset: {detail}{suffix}",
+                refs.missing.len()
+            ));
+        }
+        log_line(log, &format!(
+            "  aviso: {} referencias de sprites sin asset: {detail}{suffix}",
+            refs.missing.len()
+        ));
+    }
+
     let display = manifest.get("display_name").or_else(|| manifest.get("name"))
         .and_then(Value::as_str).unwrap_or("?");
-    log_line(log, &format!("  validado: {display} | {} acciones | {} comportamientos | {} sprites",
+    log_line(log, &format!(
+        "  validado: {display} | {} acciones | {} comportamientos | {} sprites ({} referenciados)",
         actions.as_array().map_or(0, Vec::len),
         behaviors.get("definitions").and_then(Value::as_array).map_or(0, Vec::len),
-        assets.len()));
+        assets.len(),
+        refs.referenced.len()
+    ));
     Ok(manifest)
 }
 
@@ -662,20 +685,27 @@ fn tar_add<W: std::io::Write>(builder: &mut tar::Builder<W>, member: &str, data:
 
 fn base_prototype(base: &str, hint: &str, log: &dyn Fn(&str)) -> Result<PathBuf, String> {
     let root = shimejis_dir();
-    let candidate = root.join(base);
-    if candidate.join("actions.json").is_file() { return Ok(candidate); }
-    let fallback = root.parent().unwrap_or(&root).join("prototypes").join(base);
-    if fallback.join("actions.json").is_file() { return Ok(fallback); }
+    let assets = generated_asset_names();
+    let label = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let mut rejected = Vec::new();
+
+    for candidate in [
+        root.join(base),
+        root.parent().unwrap_or(&root).join("prototypes").join(base),
+    ] {
+        if !candidate.join("actions.json").is_file() { continue; }
+        if logic_is_compatible(&candidate, &assets) { return Ok(candidate); }
+        rejected.push(format!("{} (lógica incompatible con los {} sprites)", label(&candidate), assets.len()));
+    }
+    if !rejected.is_empty() {
+        log_line(log, &format!("  aviso: {}", rejected.join("; ")));
+    }
 
     // La base por defecto del script (`Shimeji.Shimeji`) no suele estar
-    // instalada. Usamos un prototipo real para no bloquear la conversión.
+    // instalada. Elegimos un prototipo real compatible para no generar un
+    // paquete cuyas acciones apunten a sprites inexistentes.
     let hint = slugify(hint);
-    let mut candidates: Vec<PathBuf> = fs::read_dir(&root).ok().into_iter().flatten()
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.is_dir() && p.join("actions.json").is_file())
-        .collect();
-    candidates.sort();
-    let label = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let candidates = installed_logic_dirs(&assets);
     if let Some(found) = candidates.iter().find(|p| {
         let name = slugify(&label(p)).replace("shimeji-", "");
         !hint.is_empty() && (name.contains(&hint) || hint.contains(&name))
@@ -684,8 +714,8 @@ fn base_prototype(base: &str, hint: &str, log: &dyn Fn(&str)) -> Result<PathBuf,
         return Ok(found.clone());
     }
     Err(format!(
-        "el prototipo base '{base}' no existe y no hay prototipos instalados con actions.json en {}",
-        root.display()
+        "el prototipo base '{base}' no existe y no hay prototipos compatibles con los {} sprites en {}",
+        assets.len(), root.display()
     ))
 }
 
@@ -805,6 +835,122 @@ fn referenced_images(actions: &Value) -> BTreeSet<String> {
         }
     }
     refs
+}
+
+/// Nombres de sprites QOI que realmente contiene el paquete (solo `assets/`).
+fn package_asset_names(package: &WlshmArchive) -> BTreeSet<String> {
+    package.names().iter().filter_map(|name| {
+        let rest = name.strip_prefix("assets/")?;
+        if rest.contains('/') || !rest.ends_with(".qoi") { return None; }
+        Some(rest.to_string())
+    }).collect()
+}
+
+#[derive(Debug, Default)]
+struct SpriteRefReport {
+    referenced: BTreeSet<String>,
+    missing: BTreeSet<String>,
+}
+
+/// Verificación del problema: imágenes referenciadas por las acciones que no
+/// existen entre los assets del paquete (por ejemplo `shime0000.qoi` frente a
+/// `shime1.qoi`). No modifica nada.
+fn verify_sprite_refs(package: &WlshmArchive) -> Result<SpriteRefReport, String> {
+    let referenced = if package.has("actions.json") {
+        referenced_images(&package.get_json("actions.json")?)
+    } else {
+        BTreeSet::new()
+    };
+    let available = package_asset_names(package);
+    let missing = referenced.difference(&available).cloned().collect();
+    Ok(SpriteRefReport { referenced, missing })
+}
+
+/// Los bundles siempre generan exactamente `shime1.qoi`..`shime46.qoi`.
+fn generated_asset_names() -> BTreeSet<String> {
+    (1..=SPRITE_FOR.len()).map(|i| format!("shime{i}.qoi")).collect()
+}
+
+/// Una lógica base es compatible cuando todas sus imágenes existen y cubre
+/// todos los sprites generados; evita elegir prototipos de 70 sprites o
+/// variantes con nombres distintos.
+fn logic_is_compatible(dir: &Path, available: &BTreeSet<String>) -> bool {
+    if !dir.join("scripts.json").is_file() || !dir.join("behaviors.json").is_file() {
+        return false;
+    }
+    let Ok(bytes) = fs::read(dir.join("actions.json")) else { return false };
+    let Ok(actions) = serde_json::from_slice::<Value>(&bytes) else { return false };
+    let refs = referenced_images(&actions);
+    !refs.is_empty() && refs.is_subset(available) && refs.len() >= available.len()
+}
+
+fn compatible_logic_dirs(root: &Path, available: &BTreeSet<String>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = fs::read_dir(root).ok().into_iter().flatten()
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_dir() && logic_is_compatible(path, available))
+        .collect();
+    dirs.sort();
+    dirs
+}
+
+fn installed_logic_dirs(available: &BTreeSet<String>) -> Vec<PathBuf> {
+    let root = shimejis_dir();
+    let mut dirs = compatible_logic_dirs(&root, available);
+    let fallback = root.parent().unwrap_or(&root).join("prototypes");
+    if fallback.is_dir() {
+        dirs.extend(compatible_logic_dirs(&fallback, available));
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+/// Repara la lógica de un paquete ya convertido sustituyendo acciones, scripts
+/// y comportamientos por los de un prototipo instalado compatible.
+fn fix_sprite_refs_from(
+    package: &mut WlshmArchive,
+    root: &Path,
+    log: &dyn Fn(&str),
+) -> Result<Vec<String>, String> {
+    if verify_sprite_refs(package)?.missing.is_empty() {
+        return Ok(Vec::new());
+    }
+    let available = package_asset_names(package);
+    let mut dirs = compatible_logic_dirs(root, &available);
+    let fallback = root.parent().unwrap_or(root).join("prototypes");
+    if fallback.is_dir() {
+        dirs.extend(compatible_logic_dirs(&fallback, &available));
+    }
+    dirs.sort();
+    dirs.dedup();
+    let chosen = dirs.first().cloned().ok_or_else(|| {
+        format!(
+            "no hay ningún prototipo instalado cuya lógica use los {} sprites del paquete",
+            available.len()
+        )
+    })?;
+
+    let actions: Value = serde_json::from_slice(
+        &fs::read(chosen.join("actions.json")).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    package.set_json("actions.json", &actions)?;
+    package.set("scripts.json", fs::read(chosen.join("scripts.json")).map_err(|e| e.to_string())?);
+    package.set("behaviors.json", fs::read(chosen.join("behaviors.json")).map_err(|e| e.to_string())?);
+
+    let after = verify_sprite_refs(package)?;
+    if !after.missing.is_empty() {
+        return Err(format!(
+            "la lógica de {} sigue referenciando sprites inexistentes: {:?}",
+            chosen.display(), after.missing
+        ));
+    }
+    let label = chosen.file_name().unwrap_or_default().to_string_lossy();
+    log_line(log, &format!("  lógica base restaurada: {label}"));
+    Ok(vec![format!("lógica restaurada desde {label} ({} referencias)", after.referenced.len())])
+}
+
+fn fix_sprite_refs(package: &mut WlshmArchive, log: &dyn Fn(&str)) -> Result<Vec<String>, String> {
+    fix_sprite_refs_from(package, &shimejis_dir(), log)
 }
 
 fn scale_point(value: Option<&Value>, factor: f64) -> Option<Value> {
@@ -1166,6 +1312,7 @@ fn apply_fixes(package: &mut WlshmArchive, opts: &ConvertOptions, cancel: &Arc<A
     for name in selected {
         canceled(cancel)?;
         let changes = match name {
+            "refs" => fix_sprite_refs(package, log)?,
             "scale" => fix_scale(package, opts.height, log)?,
             "anchor" => fix_anchor(package)?,
             "fall" => fix_fall(package)?,
@@ -1220,6 +1367,17 @@ mod tests {
         encode_qoi(&img).unwrap()
     }
 
+    fn write_prototype(root: &Path, name: &str, refs: &[&str]) -> PathBuf {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        let frames: Vec<Value> = refs.iter().map(|image| json!({"image": image})).collect();
+        let actions = json!([{"name": "Stand", "content": [{"frames": frames}]}]);
+        fs::write(dir.join("actions.json"), actions.to_string()).unwrap();
+        fs::write(dir.join("scripts.json"), "{}").unwrap();
+        fs::write(dir.join("behaviors.json"), json!({"definitions": [], "root_behavior_list": []}).to_string()).unwrap();
+        dir
+    }
+
     fn make_wlshm(assets: &[(&str, Vec<u8>)], behaviors: Value) -> Vec<u8> {
         let mut header = wlshm_header("Test", "1.0").unwrap();
         let mut tar_buf = Vec::new();
@@ -1247,10 +1405,99 @@ mod tests {
     fn slugify_and_fix_csv() {
         assert_eq!(slugify("My Cute Shimeji!"), "my-cute-shimeji");
         assert_eq!(slugify("---"), "shimeji");
-        let fixes = FixOptions::from_csv("scale, cover").unwrap();
-        assert_eq!(fixes.list(), vec!["scale", "cover"]);
+        let fixes = FixOptions::from_csv("refs, scale, cover").unwrap();
+        assert_eq!(fixes.list(), vec!["refs", "scale", "cover"]);
         assert!(FixOptions::from_csv("none").unwrap().list().is_empty());
         assert!(FixOptions::from_csv("bogus").is_err());
+    }
+
+    #[test]
+    fn verify_sprite_refs_detects_missing_assets() {
+        let actions = json!([{
+            "content": [{"frames": [
+                {"image": "shime0000.qoi"},
+                {"image": "shime1.qoi"},
+            ]}],
+        }]);
+        let raw = make_wlshm(
+            &[("assets/shime1.qoi", qoi_bytes(8, 8, (1, 2, 3, 255)))],
+            json!({}),
+        );
+        let mut package = WlshmArchive::from_bytes(raw).unwrap();
+        package.set_json("actions.json", &actions).unwrap();
+        let report = verify_sprite_refs(&package).unwrap();
+        assert_eq!(report.referenced.len(), 2);
+        assert_eq!(report.missing, BTreeSet::from(["shime0000.qoi".to_string()]));
+    }
+
+    #[test]
+    fn logic_is_compatible_requires_existing_and_complete_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let available = BTreeSet::from(["shime1.qoi".to_string(), "shime2.qoi".to_string()]);
+        let good = write_prototype(dir.path(), "Good", &["shime1.qoi", "shime2.qoi"]);
+        let bad = write_prototype(dir.path(), "Bad", &["shime0000.qoi", "shime0001.qoi"]);
+        assert!(logic_is_compatible(&good, &available));
+        assert!(!logic_is_compatible(&bad, &available));
+    }
+
+    #[test]
+    fn fix_sprite_refs_restores_compatible_logic() {
+        let dir = tempfile::tempdir().unwrap();
+        write_prototype(dir.path(), "Base46", &["shime1.qoi"]);
+        let raw = make_wlshm(
+            &[("assets/shime1.qoi", qoi_bytes(8, 8, (1, 2, 3, 255)))],
+            json!({}),
+        );
+        let mut package = WlshmArchive::from_bytes(raw).unwrap();
+        package.set_json("actions.json", &json!([{
+            "content": [{"frames": [{"image": "shime0000.qoi"}]}],
+        }])).unwrap();
+        package.set("scripts.json", b"{\"old\":true}".to_vec());
+
+        let log = |_s: &str| {};
+        let changes = fix_sprite_refs_from(&mut package, dir.path(), &log).unwrap();
+        assert!(changes.iter().any(|c| c.contains("lógica restaurada")));
+        assert!(verify_sprite_refs(&package).unwrap().missing.is_empty());
+        let actions = package.get_json("actions.json").unwrap();
+        assert_eq!(actions[0]["content"][0]["frames"][0]["image"], "shime1.qoi");
+        assert_eq!(package.get("scripts.json").unwrap(), b"{}");
+        assert!(fix_sprite_refs_from(&mut package, dir.path(), &log).unwrap().is_empty());
+    }
+
+    #[test]
+    fn fix_sprite_refs_uses_installed_compatible_logic() {
+        let root = shimejis_dir();
+        let assets = generated_asset_names();
+        if compatible_logic_dirs(&root, &assets).is_empty() { return; }
+
+        let qoi = qoi_bytes(8, 8, (1, 2, 3, 255));
+        let members: Vec<(String, Vec<u8>)> = assets.iter()
+            .map(|name| (format!("assets/{name}"), qoi.clone()))
+            .collect();
+        let raw = make_wlshm(
+            &members.iter().map(|(name, data)| (name.as_str(), data.clone())).collect::<Vec<_>>(),
+            json!({}),
+        );
+        let mut package = WlshmArchive::from_bytes(raw).unwrap();
+        package.set_json("actions.json", &json!([{
+            "content": [{"frames": [{"image": "shime0000.qoi"}]}],
+        }])).unwrap();
+        package.set("scripts.json", b"{\"old\":true}".to_vec());
+
+        let log = |_s: &str| {};
+        let changes = fix_sprite_refs(&mut package, &log).unwrap();
+        assert!(changes.iter().any(|c| c.contains("lógica restaurada")));
+        let report = verify_sprite_refs(&package).unwrap();
+        assert!(report.missing.is_empty());
+        assert_eq!(report.referenced, assets);
+        assert_ne!(package.get("scripts.json").unwrap(), b"{\"old\":true}");
+
+        let cat = root.join("Shimeji.Cat");
+        if cat.join("actions.json").is_file() && !logic_is_compatible(&cat, &assets) {
+            let chosen = base_prototype("Shimeji.Cat", "Mafuyu Asashina", &log).unwrap();
+            assert!(logic_is_compatible(&chosen, &assets));
+            assert_ne!(chosen, cat);
+        }
     }
 
     #[test]
