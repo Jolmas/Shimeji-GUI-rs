@@ -136,6 +136,21 @@ pub fn spawn_cmd(program: String, args: Vec<String>, input: Option<String>, time
     CtlHandle { cancel, join: Some(join) }
 }
 
+/// Runs arbitrary Rust work on a cancelable thread using the same event
+/// channel as the `shimejictl` runner (used by the native converter).
+pub fn spawn_task<F>(task: F, events: mpsc::Sender<CtlEvent>) -> CtlHandle
+where
+    F: FnOnce(Arc<AtomicBool>, mpsc::Sender<CtlEvent>) -> CtlOutput + Send + 'static,
+{
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_thread = cancel.clone();
+    let join = thread::spawn(move || {
+        let out = task(cancel_thread, events.clone());
+        let _ = events.send(CtlEvent::Finished(out));
+    });
+    CtlHandle { cancel, join: Some(join) }
+}
+
 fn run_with_pty(program: String, args: Vec<String>, input: Option<String>, timeout: Duration, events: Option<mpsc::Sender<CtlEvent>>, cancel: Arc<AtomicBool>) -> CtlOutput {
     let pty = match openpty(None, None) {
         Ok(p) => p,

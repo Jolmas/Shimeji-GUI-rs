@@ -234,6 +234,106 @@ fn sanitize_filename(name: &str) -> String {
     if out.is_empty() { "shimeji".to_string() } else { out }
 }
 
+/// A `.wlshm` loaded as WLPK header + tar members. Unlike [`WlshmPackage`],
+/// this keeps every member (name, metadata and payload) so the converter can
+/// rewrite scripts/actions/behaviors/assets without intermediate files.
+#[derive(Debug, Clone)]
+pub struct WlshmArchive {
+    pub header: Vec<u8>,
+    members: Vec<(String, tar::Header, Vec<u8>)>,
+    dirty: bool,
+}
+
+impl WlshmArchive {
+    pub fn open(path: &Path) -> Result<Self, String> {
+        let raw = fs::read(path).map_err(|e| e.to_string())?;
+        Self::from_bytes(raw)
+    }
+
+    pub fn from_bytes(raw: Vec<u8>) -> Result<Self, String> {
+        if raw.len() < WLPK_HEADER_SIZE || &raw[..4] != WLPK_MAGIC {
+            return Err("cabecera WLPK no válida".to_string());
+        }
+        let mut members = Vec::new();
+        let mut archive = tar::Archive::new(Cursor::new(&raw[WLPK_HEADER_SIZE..]));
+        let entries = archive.entries().map_err(|e| e.to_string())?;
+        for entry in entries {
+            let mut entry = entry.map_err(|e| e.to_string())?;
+            let name = entry.path().map_err(|e| e.to_string())?
+                .to_string_lossy().to_string();
+            let header = entry.header().clone();
+            let mut payload = Vec::new();
+            if header.entry_type().is_file() {
+                entry.read_to_end(&mut payload).map_err(|e| e.to_string())?;
+            }
+            members.push((name, header, payload));
+        }
+        Ok(Self { header: raw[..WLPK_HEADER_SIZE].to_vec(), members, dirty: false })
+    }
+
+    pub fn is_dirty(&self) -> bool { self.dirty }
+
+    pub fn names(&self) -> Vec<String> {
+        self.members.iter().map(|(name, _, _)| name.clone()).collect()
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.members.iter().any(|(n, _, _)| n == name)
+    }
+
+    pub fn get(&self, name: &str) -> Option<&[u8]> {
+        self.members.iter().find(|(n, _, _)| n == name).map(|(_, _, p)| p.as_slice())
+    }
+
+    pub fn get_json(&self, name: &str) -> Result<Value, String> {
+        let payload = self.get(name).ok_or_else(|| format!("falta {name} en el paquete"))?;
+        serde_json::from_slice(payload).map_err(|e| format!("{name} no es JSON válido: {e}"))
+    }
+
+    pub fn set(&mut self, name: &str, payload: Vec<u8>) {
+        if let Some((_, _, old)) = self.members.iter_mut().find(|(n, _, _)| n == name) {
+            if *old != payload { *old = payload; self.dirty = true; }
+            return;
+        }
+        let mut header = tar::Header::new_ustar();
+        header.set_size(payload.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        self.members.push((name.to_string(), header, payload));
+        self.dirty = true;
+    }
+
+    pub fn set_json(&mut self, name: &str, data: &Value) -> Result<(), String> {
+        let payload = serde_json::to_vec(data).map_err(|e| e.to_string())?;
+        self.set(name, payload);
+        Ok(())
+    }
+
+    pub fn remove(&mut self, name: &str) {
+        let before = self.members.len();
+        self.members.retain(|(n, _, _)| n != name);
+        if self.members.len() != before { self.dirty = true; }
+    }
+
+    pub fn save(&self) -> Result<Vec<u8>, String> {
+        let mut tar_buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            for (name, original, payload) in &self.members {
+                let mut header = original.clone();
+                header.set_size(payload.len() as u64);
+                header.set_cksum();
+                builder.append_data(&mut header, name, Cursor::new(payload.as_slice()))
+                    .map_err(|e| e.to_string())?;
+            }
+            builder.finish().map_err(|e| e.to_string())?;
+        }
+        let mut out = self.header.clone();
+        out.extend_from_slice(&tar_buf);
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,6 @@
 use crate::core::command::CtlCommand;
 use crate::core::config::{self, IeMode, Paths, Session};
+use crate::core::convert::{self, ConvertOptions, FixOptions};
 use crate::core::parsing::{filter_behaviors, parse_bool_value, parse_config_list, parse_environments, parse_section, prototype_names, prototype_store_path, EnvironmentInfo};
 use crate::core::shimejictl::{spawn_ctl, CtlEvent, CtlHandle, CtlOutput};
 use crate::core::wlshm;
@@ -15,7 +16,7 @@ use serde_json::Value;
 enum Pending { PrototypesList, PrototypeInfo(String), Environments, Convert, Import, Stop, EnvClose, Generic }
 
 #[derive(Debug, Clone, Copy)]
-enum DialogTarget { ConvertSrcZip, ConvertSrcDir, ConvertOutDir, ImportFiles, ExportDestDir }
+enum DialogTarget { ConvertSrcZip, ConvertSrcDir, ConvertSrcWlshm, ConvertOutDir, ConvertOutFile, ImportFiles, ExportDestDir }
 
 #[derive(Default, Clone)]
 struct SettingsState {
@@ -29,8 +30,21 @@ struct SettingsState {
     raw: String,
 }
 
-#[derive(Default, Clone)]
-struct ConvertState { open: bool, src: String, out: String, force: bool, import_after: bool, log: String }
+#[derive(Clone)]
+struct ConvertState {
+    open: bool, src: String, name: String, out: String, force: bool, import_after: bool, log: String,
+    fix_only: bool, no_fix: bool, height: u32, base: String, fixes: FixOptions,
+}
+
+impl Default for ConvertState {
+    fn default() -> Self {
+        Self {
+            open: false, src: String::new(), name: String::new(), out: dirs_download(), force: true,
+            import_after: true, log: String::new(), fix_only: false, no_fix: false,
+            height: 128, base: convert::DEFAULT_BASE.to_string(), fixes: FixOptions::all(),
+        }
+    }
+}
 
 pub struct ShimejiApp {
     pub lang: Lang,
@@ -80,7 +94,7 @@ impl Default for ShimejiApp {
             selected_proto: None, prototypes: vec![], behaviors: vec![], selected_behavior: String::new(),
             environments: vec![], quantity: 1, pos_x: -1, pos_y: -1, env_idx: None,
             settings: SettingsState { open:false, breed:true, drag:true, cursor:true, affordances:true, dismiss_anim:true, win_interact:false, win_throw:false, throw_policy:"looping".into(), ie_mode:IeMode::Active, session:Session::Labwc, throw_multi:true, drag_multi:true, unified_out:true, scale:-1.0, opacity:-1.0, layer:"overlay".into(), interp:0, maxn:512, tablets:false, autostart:false, plugins_path:String::new(), confirm_restart:false, raw:String::new() },
-            convert: ConvertState { open:false, src:String::new(), out: dirs_download(), force:true, import_after:true, log:String::new() },
+            convert: ConvertState::default(),
             pending: None, ctl_rx: None, ctl_handle: None, confirm_delete: None, confirm_export: None, confirm_dismiss_all: false, confirm_stop: false, restart_rx: None, bg_rx: None, preview_rx: None, preview_tex: None, preview_pending: None, list_preview_tx, list_preview_rx, list_previews: HashMap::new(), list_preview_pending: HashSet::new(), list_preview_misses: HashSet::new(), dialog_rx: None, last_import_paths: Vec::new(), import_retry_done: false, needs_proto_refresh: false, raw_info: String::new(), last_output: String::new(), initialized: false,
         }
     }
@@ -122,6 +136,19 @@ impl ShimejiApp {
         self.ctl_rx = Some(rx); self.ctl_handle = Some(handle); self.pending = Some(pending); self.last_output.clear(); self.status = "running...".into();
     }
     fn cancel(&mut self) { if let Some(h) = &self.ctl_handle { h.cancel(); } }
+
+    /// Lanza el conversor nativo en segundo plano, reutilizando el canal de
+    /// eventos y el estado `Pending::Convert` del runner de `shimejictl`.
+    fn run_convert_task(&mut self, opts: ConvertOptions) {
+        if self.ctl_handle.is_some() { self.status = "busy".into(); return; }
+        let (tx, rx) = mpsc::channel();
+        let handle = convert::spawn_conversion(opts, tx);
+        self.ctl_rx = Some(rx);
+        self.ctl_handle = Some(handle);
+        self.pending = Some(Pending::Convert);
+        self.last_output.clear();
+        self.status = "running...".into();
+    }
 
     fn poll_ctl(&mut self, ctx: &egui::Context) {
         let mut finished: Option<CtlOutput> = None;
@@ -289,13 +316,17 @@ impl ShimejiApp {
             Some(Pending::Convert) => {
                 if code == 0 && self.convert.import_after {
                     let out = PathBuf::from(&self.convert.out);
-                    if let Ok(rd) = std::fs::read_dir(&out) {
-                        let mut files: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wlshm")).collect();
-                        files.sort();
-                        if !files.is_empty() {
-                            self.import_files(files);
-                            return;
-                        }
+                    let mut files: Vec<PathBuf> = if out.extension().and_then(|s| s.to_str()) == Some("wlshm") {
+                        vec![out]
+                    } else if let Ok(rd) = std::fs::read_dir(&out) {
+                        let mut found: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().and_then(|s| s.to_str()) == Some("wlshm")).collect();
+                        found.sort();
+                        found
+                    } else { Vec::new() };
+                    files.retain(|p| p.is_file());
+                    if !files.is_empty() {
+                        self.import_files(files);
+                        return;
                     }
                 }
                 if code == 0 { self.refresh_prototypes(); }
@@ -606,6 +637,7 @@ impl ShimejiApp {
         match target {
             DialogTarget::ConvertSrcZip => rfd::FileDialog::new().add_filter("zip", &["zip"]).set_title(title).pick_file().into_iter().collect(),
             DialogTarget::ConvertSrcDir => rfd::FileDialog::new().set_title(title).pick_folder().into_iter().collect(),
+            DialogTarget::ConvertSrcWlshm | DialogTarget::ConvertOutFile => rfd::FileDialog::new().add_filter("wlshm", &["wlshm"]).set_title(title).pick_file().into_iter().collect(),
             DialogTarget::ConvertOutDir | DialogTarget::ExportDestDir => rfd::FileDialog::new().set_title(title).pick_folder().into_iter().collect(),
             DialogTarget::ImportFiles => rfd::FileDialog::new().add_filter("wlshm", &["wlshm"]).set_title(title).pick_files().unwrap_or_default(),
         }
@@ -615,6 +647,8 @@ impl ShimejiApp {
         let mut cmd = std::process::Command::new("kdialog");
         match target {
             DialogTarget::ConvertSrcZip => { cmd.args(["--getopenfilename", start, "Zip files (*.zip)|*.zip", "--title", title]); }
+            DialogTarget::ConvertSrcWlshm => { cmd.args(["--getopenfilename", start, "WLSHM files (*.wlshm)|*.wlshm", "--title", title]); }
+            DialogTarget::ConvertOutFile => { cmd.args(["--getsavefilename", start, "WLSHM files (*.wlshm)|*.wlshm", "--title", title]); }
             DialogTarget::ConvertSrcDir | DialogTarget::ConvertOutDir | DialogTarget::ExportDestDir => { cmd.args(["--getexistingdirectory", start, "--title", title]); }
             DialogTarget::ImportFiles => { cmd.args(["--getopenfilename", start, "WLSHM files (*.wlshm)|*.wlshm", "--title", title, "--multiple", "--separate-output"]); }
         }
@@ -636,6 +670,8 @@ impl ShimejiApp {
         let mut cmd = std::process::Command::new("zenity");
         match target {
             DialogTarget::ConvertSrcZip => { cmd.args(["--file-selection", &format!("--title={title}"), &format!("--filename={start}/"), "--file-filter=Zip files (*.zip) | *.zip"]); }
+            DialogTarget::ConvertSrcWlshm => { cmd.args(["--file-selection", &format!("--title={title}"), &format!("--filename={start}/"), "--file-filter=WLSHM files (*.wlshm) | *.wlshm"]); }
+            DialogTarget::ConvertOutFile => { cmd.args(["--file-selection", "--save", "--confirm-overwrite", &format!("--title={title}"), &format!("--filename={start}"), "--file-filter=WLSHM files (*.wlshm) | *.wlshm"]); }
             DialogTarget::ConvertSrcDir | DialogTarget::ConvertOutDir | DialogTarget::ExportDestDir => { cmd.args(["--file-selection", "--directory", &format!("--title={title}"), &format!("--filename={start}/")]); }
             DialogTarget::ImportFiles => { cmd.args(["--file-selection", "--multiple", "--separator=\n", &format!("--title={title}"), &format!("--filename={start}/"), "--file-filter=WLSHM files (*.wlshm) | *.wlshm"]); }
         }
@@ -660,7 +696,9 @@ impl ShimejiApp {
         let title = match target {
             DialogTarget::ConvertSrcZip => self.t(Key::ConverterZip).to_string(),
             DialogTarget::ConvertSrcDir => self.t(Key::ConverterDir).to_string(),
+            DialogTarget::ConvertSrcWlshm => self.t(Key::ConverterWlshm).to_string(),
             DialogTarget::ConvertOutDir => self.t(Key::ConverterOutput).to_string(),
+            DialogTarget::ConvertOutFile => self.t(Key::ConverterOutFile).to_string(),
             DialogTarget::ImportFiles => self.t(Key::BtnAddCharacter).to_string(),
             DialogTarget::ExportDestDir => self.t(Key::BtnExport).to_string(),
         };
@@ -684,10 +722,10 @@ impl ShimejiApp {
             self.dialog_rx = None;
             if paths.is_empty() { self.push_log("Dialog: cancelled or no selection"); return; }
             match target {
-                DialogTarget::ConvertSrcZip | DialogTarget::ConvertSrcDir => {
+                DialogTarget::ConvertSrcZip | DialogTarget::ConvertSrcDir | DialogTarget::ConvertSrcWlshm => {
                     if let Some(p) = paths.first() { self.convert.src = p.to_string_lossy().to_string(); }
                 }
-                DialogTarget::ConvertOutDir => {
+                DialogTarget::ConvertOutDir | DialogTarget::ConvertOutFile => {
                     if let Some(p) = paths.first() { self.convert.out = p.to_string_lossy().to_string(); }
                 }
                 DialogTarget::ImportFiles => {
@@ -1218,30 +1256,93 @@ impl ShimejiApp {
 
     fn convert_window(&mut self, ctx: &egui::Context) {
         let mut open = self.convert.open;
-        egui::Window::new(self.t(Key::ConverterTitle)).open(&mut open).default_size([600.0, 420.0]).show(ctx, |ui| {
+        egui::Window::new(self.t(Key::ConverterTitle)).open(&mut open).default_size([640.0, 560.0]).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(self.t(Key::ConverterSource));
                 ui.text_edit_singleline(&mut self.convert.src);
-                if ui.button(self.t(Key::ConverterZip)).clicked() { self.open_dialog(DialogTarget::ConvertSrcZip); }
-                if ui.button(self.t(Key::ConverterDir)).clicked() { self.open_dialog(DialogTarget::ConvertSrcDir); }
+                if self.convert.fix_only {
+                    if ui.button(self.t(Key::ConverterWlshm)).clicked() { self.open_dialog(DialogTarget::ConvertSrcWlshm); }
+                } else {
+                    if ui.button(self.t(Key::ConverterZip)).clicked() { self.open_dialog(DialogTarget::ConvertSrcZip); }
+                    if ui.button(self.t(Key::ConverterDir)).clicked() { self.open_dialog(DialogTarget::ConvertSrcDir); }
+                }
+            });
+            let l_name = self.t(Key::ConverterName);
+            ui.horizontal(|ui| {
+                ui.label(l_name);
+                ui.text_edit_singleline(&mut self.convert.name);
             });
             ui.horizontal(|ui| {
                 ui.label(self.t(Key::ConverterOutput));
                 ui.text_edit_singleline(&mut self.convert.out);
-                if ui.button("...").clicked() { self.open_dialog(DialogTarget::ConvertOutDir); }
+                if self.convert.fix_only {
+                    if ui.button(self.t(Key::ConverterOutFile)).clicked() { self.open_dialog(DialogTarget::ConvertOutFile); }
+                } else if ui.button("...").clicked() {
+                    self.open_dialog(DialogTarget::ConvertOutDir);
+                }
             });
-            let l = self.t(Key::ConverterForce); ui.checkbox(&mut self.convert.force, l);
-            let l = self.t(Key::ConverterImportAfter); ui.checkbox(&mut self.convert.import_after, l);
+            let l_fix_only = self.t(Key::ConverterFixOnly);
+            let l_force = self.t(Key::ConverterForce);
+            let l_import = self.t(Key::ConverterImportAfter);
+            let l_no_fix = self.t(Key::ConverterNoFix);
+            let l_fixes = self.t(Key::ConverterFixes);
+            let l_scale = self.t(Key::ConverterFixScale);
+            let l_anchor = self.t(Key::ConverterFixAnchor);
+            let l_fall = self.t(Key::ConverterFixFall);
+            let l_embedded = self.t(Key::ConverterFixEmbedded);
+            let l_cover = self.t(Key::ConverterFixCover);
+            let l_height = self.t(Key::ConverterHeight);
+            let l_base = self.t(Key::ConverterBase);
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.convert.fix_only, l_fix_only);
+                ui.checkbox(&mut self.convert.force, l_force);
+                ui.checkbox(&mut self.convert.import_after, l_import);
+            });
+            ui.checkbox(&mut self.convert.no_fix, l_no_fix);
+            if !self.convert.no_fix {
+                ui.collapsing(l_fixes, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.convert.fixes.scale, l_scale);
+                        ui.checkbox(&mut self.convert.fixes.anchor, l_anchor);
+                        ui.checkbox(&mut self.convert.fixes.fall, l_fall);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.convert.fixes.embedded, l_embedded);
+                        ui.checkbox(&mut self.convert.fixes.cover, l_cover);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(l_height);
+                        ui.add(egui::DragValue::new(&mut self.convert.height).range(16..=1024));
+                    });
+                    if !self.convert.fix_only {
+                        ui.horizontal(|ui| {
+                            ui.label(l_base);
+                            ui.text_edit_singleline(&mut self.convert.base);
+                        });
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 if ui.button(self.t(Key::BtnStartConversion)).clicked() && !self.convert.src.is_empty() && !self.convert.out.is_empty() {
-                    let _ = std::fs::create_dir_all(&self.convert.out);
+                    let opts = ConvertOptions {
+                        source: PathBuf::from(&self.convert.src),
+                        name: self.convert.name.trim().to_string(),
+                        output: PathBuf::from(&self.convert.out),
+                        output_is_file: self.convert.fix_only,
+                        force: self.convert.force,
+                        base: if self.convert.base.trim().is_empty() { convert::DEFAULT_BASE.to_string() } else { self.convert.base.trim().to_string() },
+                        fixes: if self.convert.no_fix { FixOptions::default() } else { self.convert.fixes.clone() },
+                        height: self.convert.height,
+                        fix_only: self.convert.fix_only,
+                        import_after: self.convert.import_after,
+                    };
                     self.convert.log.clear();
-                    self.run_cmd_with_input(CtlCommand::Convert { source: self.convert.src.clone(), out_dir: self.convert.out.clone(), force: self.convert.force }, Some("A\n".to_string()), Pending::Convert);
+                    self.run_convert_task(opts);
                 }
                 if ui.button(self.t(Key::BtnCancel)).clicked() { self.cancel(); }
             });
             ui.separator();
-            egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| { ui.add(egui::TextEdit::multiline(&mut self.convert.log.as_str()).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace)); });
+            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| { ui.add(egui::TextEdit::multiline(&mut self.convert.log.as_str()).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace)); });
         });
         self.convert.open = open;
     }
